@@ -37,12 +37,12 @@ const CreatorSchema = new mongoose.Schema({
 });
 
 const QuizSchema = new mongoose.Schema({
-  code: String,
+  code: { type: String, unique: true },
   title: String,
   description: String,
-  duration: { type: Number, default: 1200 },
+  duration: Number, // seconds
   creatorId: mongoose.Schema.Types.ObjectId,
-  status: { type: String, default: "created" },
+  status: { type: String, default: "created" }, // created | live | ended
   startTime: Date,
   endTime: Date,
   questions: [
@@ -93,35 +93,39 @@ function auth(req, res, next) {
 ====================== */
 app.post("/api/auth/register", async (req, res) => {
   const { name, email, password } = req.body;
+
   if (await Creator.findOne({ email }))
-    return res.status(400).json({ msg: "Email exists" });
+    return res.status(400).json({ msg: "Email already exists" });
 
   const hashed = await bcrypt.hash(password, 10);
   await Creator.create({ name, email, password: hashed });
-  res.json({ msg: "Registered" });
+
+  res.json({ msg: "Registered successfully" });
 });
 
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
+
   const creator = await Creator.findOne({ email });
-  if (!creator) return res.status(400).json({ msg: "Invalid login" });
+  if (!creator) return res.status(400).json({ msg: "Invalid credentials" });
 
   const ok = await bcrypt.compare(password, creator.password);
-  if (!ok) return res.status(400).json({ msg: "Invalid login" });
+  if (!ok) return res.status(400).json({ msg: "Invalid credentials" });
 
-  const token = jwt.sign({ id: creator._id }, JWT_SECRET, {
-    expiresIn: "1d"
-  });
+  const token = jwt.sign({ id: creator._id }, JWT_SECRET, { expiresIn: "1d" });
   res.json({ token, name: creator.name });
 });
 
 /* ======================
-   QUIZ (CREATOR)
+   CREATOR QUIZ ROUTES
 ====================== */
+
+/* Create quiz */
 app.post("/api/quiz/create", auth, async (req, res) => {
   const { title, description, duration, questions } = req.body;
-  if (!questions?.length)
-    return res.status(400).json({ msg: "Questions required" });
+
+  if (!title || !questions?.length)
+    return res.status(400).json({ msg: "Invalid data" });
 
   const quiz = await Quiz.create({
     code: generateCode(),
@@ -131,53 +135,89 @@ app.post("/api/quiz/create", auth, async (req, res) => {
     creatorId: req.user.id,
     questions
   });
+
   res.json(quiz);
 });
 
+/* Get my quizzes (DASHBOARD) */
+app.get("/api/quiz/my", auth, async (req, res) => {
+  const quizzes = await Quiz.find({ creatorId: req.user.id })
+    .select("code title description status createdAt");
+
+  res.json(quizzes);
+});
+
+/* Get single quiz (TEST PAGE) */
+app.get("/api/quiz/:code", auth, async (req, res) => {
+  const quiz = await Quiz.findOne({ code: req.params.code });
+
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+  if (quiz.creatorId.toString() !== req.user.id)
+    return res.status(403).json({ msg: "Access denied" });
+
+  res.json(quiz);
+});
+
+/* Start quiz */
 app.post("/api/quiz/start/:code", auth, async (req, res) => {
   const quiz = await Quiz.findOne({ code: req.params.code });
+
   if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+  if (quiz.creatorId.toString() !== req.user.id)
+    return res.status(403).json({ msg: "Not your quiz" });
+
+  if (quiz.status === "live")
+    return res.status(400).json({ msg: "Quiz already live" });
 
   quiz.status = "live";
   quiz.startTime = new Date();
   quiz.endTime = new Date(Date.now() + quiz.duration * 1000);
-  await quiz.save();
 
+  await quiz.save();
   res.json({ msg: "Quiz started" });
 });
 
+/* Delete quiz */
 app.delete("/api/quiz/delete/:code", auth, async (req, res) => {
-  await Quiz.deleteOne({ code: req.params.code });
-  await Submission.deleteMany({ quizCode: req.params.code });
+  const quiz = await Quiz.findOne({ code: req.params.code });
+
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+  if (quiz.creatorId.toString() !== req.user.id)
+    return res.status(403).json({ msg: "Not your quiz" });
+
+  await Quiz.deleteOne({ code: quiz.code });
+  await Submission.deleteMany({ quizCode: quiz.code });
+
   res.json({ msg: "Quiz deleted" });
 });
 
 /* ======================
-   PARTICIPANT
+   PARTICIPANT ROUTES
 ====================== */
+
+/* Join quiz */
 app.post("/api/quiz/join/:code", async (req, res) => {
+  const { rollNo } = req.body;
   const quiz = await Quiz.findOne({ code: req.params.code });
+
   if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
 
   if (quiz.status !== "live")
-    return res.json({ msg: "Waiting", status: quiz.status });
+    return res.json({ status: quiz.status });
 
   if (Date.now() > quiz.endTime)
     return res.status(400).json({ msg: "Quiz ended" });
 
-  if (
-    await Submission.findOne({
-      quizCode: quiz.code,
-      rollNo: req.body.rollNo
-    })
-  )
+  if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
     return res.status(400).json({ msg: "Already attempted" });
 
-  res.json({ msg: "Allowed", endTime: quiz.endTime });
+  res.json({ status: "allowed", endTime: quiz.endTime });
 });
 
+/* Get questions (NO ANSWERS) */
 app.get("/api/quiz/questions/:code", async (req, res) => {
   const quiz = await Quiz.findOne({ code: req.params.code });
+
   if (!quiz || quiz.status !== "live")
     return res.status(400).json({ msg: "Quiz not live" });
 
@@ -190,13 +230,17 @@ app.get("/api/quiz/questions/:code", async (req, res) => {
   });
 });
 
+/* Submit quiz */
 app.post("/api/quiz/submit/:code", async (req, res) => {
   const { name, branch, rollNo, answers } = req.body;
   const quiz = await Quiz.findOne({ code: req.params.code });
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
 
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
   if (Date.now() > quiz.endTime)
     return res.status(400).json({ msg: "Time over" });
+
+  if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
+    return res.status(400).json({ msg: "Already submitted" });
 
   let score = 0;
   quiz.questions.forEach((q, i) => {
@@ -219,19 +263,27 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
 /* ======================
    RESULTS
 ====================== */
+
+/* Leaderboard */
 app.get("/api/quiz/leaderboard/:code", async (req, res) => {
   const data = await Submission.find({ quizCode: req.params.code })
     .sort({ score: -1, submittedAt: 1 })
     .select("name rollNo score");
+
   res.json(data);
 });
 
+/* Summary */
 app.get("/api/quiz/summary/:code", async (req, res) => {
   const subs = await Submission.find({ quizCode: req.params.code });
+
   const total = subs.length;
-  const highest = Math.max(...subs.map(s => s.score), 0);
-  const avg = total ? subs.reduce((a, b) => a + b.score, 0) / total : 0;
-  res.json({ total, highest, average: avg });
+  const highest = total ? Math.max(...subs.map(s => s.score)) : 0;
+  const average = total
+    ? subs.reduce((a, b) => a + b.score, 0) / total
+    : 0;
+
+  res.json({ total, highest, average });
 });
 
 /* ======================

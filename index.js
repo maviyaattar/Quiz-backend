@@ -287,6 +287,24 @@ app.get("/api/quiz/summary/:code", async (req, res) => {
 });
 
 /* ======================
+   PROFILE (CREATOR)
+====================== */
+app.get("/api/auth/me", auth, async (req, res) => {
+  try {
+    const creator = await Creator.findById(req.user.id)
+      .select("name email");
+
+    if (!creator) {
+      return res.status(404).json({ msg: "User not found" });
+    }
+
+    res.json(creator);
+  } catch (err) {
+    console.error("Profile error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+/* ======================
    SERVER
 ====================== */
 app.listen(PORT, () =>

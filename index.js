@@ -3,11 +3,14 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const PDFDocument = require("pdfkit");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 
 /* ======================
-   CONFIG (RAILWAY)
+   CONFIG
 ====================== */
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
@@ -22,14 +25,14 @@ app.use(express.json());
 /* ======================
    DB CONNECT
 ====================== */
-mongoose
-  .connect(MONGO_URI)
+mongoose.connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => console.error("❌ DB Error:", err));
 
 /* ======================
    SCHEMAS
 ====================== */
+
 const CreatorSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
@@ -40,11 +43,17 @@ const QuizSchema = new mongoose.Schema({
   code: { type: String, unique: true },
   title: String,
   description: String,
-  duration: Number, // seconds
+  duration: Number,
   creatorId: mongoose.Schema.Types.ObjectId,
-  status: { type: String, default: "created" }, // created | live | ended
+
+  orgName: String,
+  logoUrl: String,
+  negativeMarking: { type: Boolean, default: false },
+
+  status: { type: String, default: "created" },
   startTime: Date,
   endTime: Date,
+
   questions: [
     {
       text: String,
@@ -52,6 +61,7 @@ const QuizSchema = new mongoose.Schema({
       correctIndex: Number
     }
   ],
+
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -72,8 +82,13 @@ const Submission = mongoose.model("Submission", SubmissionSchema);
 /* ======================
    HELPERS
 ====================== */
+
 function generateCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+function shuffleArray(arr) {
+  return arr.sort(() => Math.random() - 0.5);
 }
 
 function auth(req, res, next) {
@@ -89,8 +104,9 @@ function auth(req, res, next) {
 }
 
 /* ======================
-   AUTH ROUTES
+   AUTH
 ====================== */
+
 app.post("/api/auth/register", async (req, res) => {
   const { name, email, password } = req.body;
 
@@ -117,12 +133,11 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 /* ======================
-   CREATOR QUIZ ROUTES
+   CREATE QUIZ
 ====================== */
 
-/* Create quiz */
 app.post("/api/quiz/create", auth, async (req, res) => {
-  const { title, description, duration, questions } = req.body;
+  const { title, description, duration, questions, orgName, logoUrl, negativeMarking } = req.body;
 
   if (!title || !questions?.length)
     return res.status(400).json({ msg: "Invalid data" });
@@ -133,104 +148,44 @@ app.post("/api/quiz/create", auth, async (req, res) => {
     description,
     duration,
     creatorId: req.user.id,
-    questions
+    questions,
+    orgName,
+    logoUrl,
+    negativeMarking
   });
 
   res.json(quiz);
 });
 
-/* Get my quizzes (DASHBOARD) */
-app.get("/api/quiz/my", auth, async (req, res) => {
-  const quizzes = await Quiz.find({ creatorId: req.user.id })
-    .select("code title description status createdAt");
-
-  res.json(quizzes);
-});
-
-/* Get single quiz (TEST PAGE) */
-app.get("/api/quiz/:code", auth, async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
-
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (quiz.creatorId.toString() !== req.user.id)
-    return res.status(403).json({ msg: "Access denied" });
-
-  res.json(quiz);
-});
-
-/* Start quiz */
-app.post("/api/quiz/start/:code", auth, async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
-
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (quiz.creatorId.toString() !== req.user.id)
-    return res.status(403).json({ msg: "Not your quiz" });
-
-  if (quiz.status === "live")
-    return res.status(400).json({ msg: "Quiz already live" });
-
-  quiz.status = "live";
-  quiz.startTime = new Date();
-  quiz.endTime = new Date(Date.now() + quiz.duration * 1000);
-
-  await quiz.save();
-  res.json({ msg: "Quiz started" });
-});
-
-/* Delete quiz */
-app.delete("/api/quiz/delete/:code", auth, async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
-
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (quiz.creatorId.toString() !== req.user.id)
-    return res.status(403).json({ msg: "Not your quiz" });
-
-  await Quiz.deleteOne({ code: quiz.code });
-  await Submission.deleteMany({ quizCode: quiz.code });
-
-  res.json({ msg: "Quiz deleted" });
-});
-
 /* ======================
-   PARTICIPANT ROUTES
+   GET QUESTIONS (SHUFFLED)
 ====================== */
 
-/* Join quiz */
-app.post("/api/quiz/join/:code", async (req, res) => {
-  const { rollNo } = req.body;
-  const quiz = await Quiz.findOne({ code: req.params.code });
-
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-
-  if (quiz.status !== "live")
-    return res.json({ status: quiz.status });
-
-  if (Date.now() > quiz.endTime)
-    return res.status(400).json({ msg: "Quiz ended" });
-
-  if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
-    return res.status(400).json({ msg: "Already attempted" });
-
-  res.json({ status: "allowed", endTime: quiz.endTime });
-});
-
-/* Get questions (NO ANSWERS) */
 app.get("/api/quiz/questions/:code", async (req, res) => {
   const quiz = await Quiz.findOne({ code: req.params.code });
 
   if (!quiz || quiz.status !== "live")
     return res.status(400).json({ msg: "Quiz not live" });
 
+  const shuffledQuestions = shuffleArray([...quiz.questions]).map(q => {
+    const shuffledOptions = shuffleArray([...q.options]);
+
+    return {
+      text: q.text,
+      options: shuffledOptions
+    };
+  });
+
   res.json({
     endTime: quiz.endTime,
-    questions: quiz.questions.map(q => ({
-      text: q.text,
-      options: q.options
-    }))
+    questions: shuffledQuestions
   });
 });
 
-/* Submit quiz */
+/* ======================
+   SUBMIT QUIZ + PDF
+====================== */
+
 app.post("/api/quiz/submit/:code", async (req, res) => {
   const { name, branch, rollNo, answers } = req.body;
   const quiz = await Quiz.findOne({ code: req.params.code });
@@ -243,8 +198,13 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
     return res.status(400).json({ msg: "Already submitted" });
 
   let score = 0;
+
   quiz.questions.forEach((q, i) => {
-    if (answers[i] === q.correctIndex) score++;
+    if (answers[i] === q.correctIndex) {
+      score += 1;
+    } else if (quiz.negativeMarking) {
+      score -= 0.25;
+    }
   });
 
   await Submission.create({
@@ -257,56 +217,49 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
     submittedAt: new Date()
   });
 
-  res.json({ score, total: quiz.questions.length });
+  /* ===== PDF GENERATION ===== */
+
+  const fileName = `Result-${rollNo}-${quiz.code}.pdf`;
+  const filePath = path.join(__dirname, fileName);
+  const doc = new PDFDocument();
+
+  doc.pipe(fs.createWriteStream(filePath));
+
+  doc.fontSize(18).text("Quiz Result Report", { align: "center" });
+  doc.moveDown();
+
+  if (quiz.orgName)
+    doc.fontSize(14).text(`Organization: ${quiz.orgName}`);
+
+  doc.text(`Name: ${name}`);
+  doc.text(`Roll No: ${rollNo}`);
+  doc.text(`Score: ${score}/${quiz.questions.length}`);
+  doc.moveDown();
+
+  quiz.questions.forEach((q, i) => {
+    const userAnswer = answers[i];
+    const correct = userAnswer === q.correctIndex;
+
+    doc.text(`Q${i + 1}: ${q.text}`);
+    doc.text(`Your Answer: ${q.options[userAnswer]}`);
+    doc.text(`Correct Answer: ${q.options[q.correctIndex]}`);
+    doc.text(correct ? "✔ Correct" : "❌ Incorrect");
+    doc.moveDown();
+  });
+
+  doc.end();
+
+  doc.on("finish", () => {
+    res.download(filePath, fileName, () => {
+      fs.unlinkSync(filePath);
+    });
+  });
 });
 
-/* ======================
-   RESULTS
-====================== */
-
-/* Leaderboard */
-app.get("/api/quiz/leaderboard/:code", async (req, res) => {
-  const data = await Submission.find({ quizCode: req.params.code })
-    .sort({ score: -1, submittedAt: 1 })
-    .select("name rollNo score");
-
-  res.json(data);
-});
-
-/* Summary */
-app.get("/api/quiz/summary/:code", async (req, res) => {
-  const subs = await Submission.find({ quizCode: req.params.code });
-
-  const total = subs.length;
-  const highest = total ? Math.max(...subs.map(s => s.score)) : 0;
-  const average = total
-    ? subs.reduce((a, b) => a + b.score, 0) / total
-    : 0;
-
-  res.json({ total, highest, average });
-});
-
-/* ======================
-   PROFILE (CREATOR)
-====================== */
-app.get("/api/auth/me", auth, async (req, res) => {
-  try {
-    const creator = await Creator.findById(req.user.id)
-      .select("name email");
-
-    if (!creator) {
-      return res.status(404).json({ msg: "User not found" });
-    }
-
-    res.json(creator);
-  } catch (err) {
-    console.error("Profile error:", err);
-    res.status(500).json({ msg: "Server error" });
-  }
-});
 /* ======================
    SERVER
 ====================== */
+
 app.listen(PORT, () =>
   console.log(`🚀 Server running on port ${PORT}`)
 );

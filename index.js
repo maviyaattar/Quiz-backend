@@ -10,27 +10,27 @@ const path = require("path");
 const app = express();
 
 /* ======================
-   CONFIG
+CONFIG (RAILWAY)
 ====================== */
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 /* ======================
-   MIDDLEWARE
+MIDDLEWARE
 ====================== */
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 /* ======================
-   DB CONNECT
+DB CONNECT
 ====================== */
 mongoose.connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.error("❌ DB Error:", err));
+.then(() => console.log("✅ MongoDB Connected"))
+.catch(err => console.error("❌ DB Error:", err));
 
 /* ======================
-   SCHEMAS
+SCHEMAS
 ====================== */
 
 const CreatorSchema = new mongoose.Schema({
@@ -80,7 +80,7 @@ const Quiz = mongoose.model("Quiz", QuizSchema);
 const Submission = mongoose.model("Submission", SubmissionSchema);
 
 /* ======================
-   HELPERS
+HELPERS
 ====================== */
 
 function generateCode() {
@@ -100,7 +100,7 @@ function auth(req, res, next) {
 }
 
 /* ======================
-   AUTH ROUTES
+AUTH ROUTES
 ====================== */
 
 app.post("/api/auth/register", async (req, res) => {
@@ -129,7 +129,7 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 /* ======================
-   CREATE QUIZ
+CREATE QUIZ
 ====================== */
 
 app.post("/api/quiz/create", auth, async (req, res) => {
@@ -154,8 +154,24 @@ app.post("/api/quiz/create", auth, async (req, res) => {
 });
 
 /* ======================
-   START QUIZ
+ALL YOUR OLD ROUTES KEPT SAME
 ====================== */
+
+app.get("/api/quiz/my", auth, async (req, res) => {
+  const quizzes = await Quiz.find({ creatorId: req.user.id })
+    .select("code title description status createdAt");
+  res.json(quizzes);
+});
+
+app.get("/api/quiz/:code", auth, async (req, res) => {
+  const quiz = await Quiz.findOne({ code: req.params.code });
+
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+  if (quiz.creatorId.toString() !== req.user.id)
+    return res.status(403).json({ msg: "Access denied" });
+
+  res.json(quiz);
+});
 
 app.post("/api/quiz/start/:code", auth, async (req, res) => {
   const quiz = await Quiz.findOne({ code: req.params.code });
@@ -169,13 +185,43 @@ app.post("/api/quiz/start/:code", auth, async (req, res) => {
   quiz.endTime = new Date(Date.now() + quiz.duration * 1000);
 
   await quiz.save();
-
   res.json({ msg: "Quiz started", endTime: quiz.endTime });
 });
 
+app.delete("/api/quiz/delete/:code", auth, async (req, res) => {
+  const quiz = await Quiz.findOne({ code: req.params.code });
+
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+  if (quiz.creatorId.toString() !== req.user.id)
+    return res.status(403).json({ msg: "Not your quiz" });
+
+  await Quiz.deleteOne({ code: quiz.code });
+  await Submission.deleteMany({ quizCode: quiz.code });
+
+  res.json({ msg: "Quiz deleted" });
+});
+
 /* ======================
-   GET QUESTIONS (SAFE)
+PARTICIPANT
 ====================== */
+
+app.post("/api/quiz/join/:code", async (req, res) => {
+  const { rollNo } = req.body;
+  const quiz = await Quiz.findOne({ code: req.params.code });
+
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+
+  if (quiz.status !== "live")
+    return res.json({ status: quiz.status });
+
+  if (Date.now() > quiz.endTime)
+    return res.status(400).json({ msg: "Quiz ended" });
+
+  if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
+    return res.status(400).json({ msg: "Already attempted" });
+
+  res.json({ status: "allowed", endTime: quiz.endTime });
+});
 
 app.get("/api/quiz/questions/:code", async (req, res) => {
   const quiz = await Quiz.findOne({ code: req.params.code });
@@ -193,7 +239,7 @@ app.get("/api/quiz/questions/:code", async (req, res) => {
 });
 
 /* ======================
-   SUBMIT + PDF
+SUBMIT + PDF
 ====================== */
 
 app.post("/api/quiz/submit/:code", async (req, res) => {
@@ -233,9 +279,7 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
   doc.fontSize(18).text("Quiz Result Report", { align: "center" });
   doc.moveDown();
 
-  if (quiz.orgName)
-    doc.text(`Organization: ${quiz.orgName}`);
-
+  if (quiz.orgName) doc.text(`Organization: ${quiz.orgName}`);
   doc.text(`Name: ${name}`);
   doc.text(`Roll No: ${rollNo}`);
   doc.text(`Score: ${score}/${quiz.questions.length}`);
@@ -243,7 +287,6 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
 
   quiz.questions.forEach((q, i) => {
     const correct = answers[i] === q.correctIndex;
-
     doc.text(`Q${i + 1}: ${q.text}`);
     doc.text(`Your Answer: ${q.options[answers[i]]}`);
     doc.text(`Correct Answer: ${q.options[q.correctIndex]}`);
@@ -261,20 +304,15 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
 });
 
 /* ======================
-   LEADERBOARD
+LEADERBOARD & SUMMARY
 ====================== */
 
 app.get("/api/quiz/leaderboard/:code", async (req, res) => {
   const data = await Submission.find({ quizCode: req.params.code })
     .sort({ score: -1, submittedAt: 1 })
     .select("name rollNo score");
-
   res.json(data);
 });
-
-/* ======================
-   SUMMARY
-====================== */
 
 app.get("/api/quiz/summary/:code", async (req, res) => {
   const subs = await Submission.find({ quizCode: req.params.code });
@@ -288,10 +326,14 @@ app.get("/api/quiz/summary/:code", async (req, res) => {
   res.json({ total, highest, average });
 });
 
-/* ======================
-   SERVER
-====================== */
+app.get("/api/auth/me", auth, async (req, res) => {
+  const creator = await Creator.findById(req.user.id).select("name email");
+  res.json(creator);
+});
 
+/* ======================
+SERVER
+====================== */
 app.listen(PORT, () =>
   console.log(`🚀 Server running on port ${PORT}`)
 );

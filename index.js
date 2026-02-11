@@ -605,7 +605,9 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
 
     doc.end();
 
-    // Handle PDF generation errors
+    // Handle PDF generation errors during streaming
+    // Note: If error occurs after piping starts, response headers are already sent
+    // so we can only log the error. The client will receive an incomplete/corrupted PDF.
     doc.on("error", (err) => {
       console.error("PDF generation error:", err);
       if (!res.headersSent) {
@@ -874,7 +876,9 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
 
     doc.end();
 
-    // Handle PDF generation errors
+    // Handle PDF generation errors during streaming
+    // Note: If error occurs after piping starts, response headers are already sent
+    // so we can only log the error. The client will receive an incomplete/corrupted PDF.
     doc.on("error", (err) => {
       console.error("PDF generation error:", err);
       if (!res.headersSent) {

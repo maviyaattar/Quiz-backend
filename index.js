@@ -19,7 +19,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 /* ======================
    MIDDLEWARE
 ====================== */
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 /* ======================
@@ -87,10 +87,6 @@ function generateCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-function shuffleArray(arr) {
-  return arr.sort(() => Math.random() - 0.5);
-}
-
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ msg: "No token" });
@@ -104,7 +100,7 @@ function auth(req, res, next) {
 }
 
 /* ======================
-   AUTH
+   AUTH ROUTES
 ====================== */
 
 app.post("/api/auth/register", async (req, res) => {
@@ -158,7 +154,27 @@ app.post("/api/quiz/create", auth, async (req, res) => {
 });
 
 /* ======================
-   GET QUESTIONS (SHUFFLED)
+   START QUIZ
+====================== */
+
+app.post("/api/quiz/start/:code", auth, async (req, res) => {
+  const quiz = await Quiz.findOne({ code: req.params.code });
+
+  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+  if (quiz.creatorId.toString() !== req.user.id)
+    return res.status(403).json({ msg: "Not your quiz" });
+
+  quiz.status = "live";
+  quiz.startTime = new Date();
+  quiz.endTime = new Date(Date.now() + quiz.duration * 1000);
+
+  await quiz.save();
+
+  res.json({ msg: "Quiz started", endTime: quiz.endTime });
+});
+
+/* ======================
+   GET QUESTIONS (SAFE)
 ====================== */
 
 app.get("/api/quiz/questions/:code", async (req, res) => {
@@ -167,23 +183,17 @@ app.get("/api/quiz/questions/:code", async (req, res) => {
   if (!quiz || quiz.status !== "live")
     return res.status(400).json({ msg: "Quiz not live" });
 
-  const shuffledQuestions = shuffleArray([...quiz.questions]).map(q => {
-    const shuffledOptions = shuffleArray([...q.options]);
-
-    return {
-      text: q.text,
-      options: shuffledOptions
-    };
-  });
-
   res.json({
     endTime: quiz.endTime,
-    questions: shuffledQuestions
+    questions: quiz.questions.map(q => ({
+      text: q.text,
+      options: q.options
+    }))
   });
 });
 
 /* ======================
-   SUBMIT QUIZ + PDF
+   SUBMIT + PDF
 ====================== */
 
 app.post("/api/quiz/submit/:code", async (req, res) => {
@@ -200,11 +210,8 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
   let score = 0;
 
   quiz.questions.forEach((q, i) => {
-    if (answers[i] === q.correctIndex) {
-      score += 1;
-    } else if (quiz.negativeMarking) {
-      score -= 0.25;
-    }
+    if (answers[i] === q.correctIndex) score++;
+    else if (quiz.negativeMarking) score -= 0.25;
   });
 
   await Submission.create({
@@ -217,8 +224,6 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
     submittedAt: new Date()
   });
 
-  /* ===== PDF GENERATION ===== */
-
   const fileName = `Result-${rollNo}-${quiz.code}.pdf`;
   const filePath = path.join(__dirname, fileName);
   const doc = new PDFDocument();
@@ -229,7 +234,7 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
   doc.moveDown();
 
   if (quiz.orgName)
-    doc.fontSize(14).text(`Organization: ${quiz.orgName}`);
+    doc.text(`Organization: ${quiz.orgName}`);
 
   doc.text(`Name: ${name}`);
   doc.text(`Roll No: ${rollNo}`);
@@ -237,11 +242,10 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
   doc.moveDown();
 
   quiz.questions.forEach((q, i) => {
-    const userAnswer = answers[i];
-    const correct = userAnswer === q.correctIndex;
+    const correct = answers[i] === q.correctIndex;
 
     doc.text(`Q${i + 1}: ${q.text}`);
-    doc.text(`Your Answer: ${q.options[userAnswer]}`);
+    doc.text(`Your Answer: ${q.options[answers[i]]}`);
     doc.text(`Correct Answer: ${q.options[q.correctIndex]}`);
     doc.text(correct ? "✔ Correct" : "❌ Incorrect");
     doc.moveDown();
@@ -254,6 +258,34 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
       fs.unlinkSync(filePath);
     });
   });
+});
+
+/* ======================
+   LEADERBOARD
+====================== */
+
+app.get("/api/quiz/leaderboard/:code", async (req, res) => {
+  const data = await Submission.find({ quizCode: req.params.code })
+    .sort({ score: -1, submittedAt: 1 })
+    .select("name rollNo score");
+
+  res.json(data);
+});
+
+/* ======================
+   SUMMARY
+====================== */
+
+app.get("/api/quiz/summary/:code", async (req, res) => {
+  const subs = await Submission.find({ quizCode: req.params.code });
+
+  const total = subs.length;
+  const highest = total ? Math.max(...subs.map(s => s.score)) : 0;
+  const average = total
+    ? subs.reduce((a, b) => a + b.score, 0) / total
+    : 0;
+
+  res.json({ total, highest, average });
 });
 
 /* ======================

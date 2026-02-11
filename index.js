@@ -343,6 +343,8 @@ app.get("/api/quiz/questions/:code", async (req, res) => {
 
     res.json({
       endTime: quiz.endTime,
+      orgName: quiz.orgName,
+      logoUrl: quiz.logoUrl,
       questions: quiz.questions.map(q => ({
         text: q.text,
         options: q.options
@@ -375,6 +377,22 @@ function getPerformanceRating(percentage) {
   if (percentage >= 70) return "Good";
   if (percentage >= 50) return "Average";
   return "Needs Improvement";
+}
+
+// Helper function to calculate quiz statistics
+function calculateQuizStatistics(quiz, submission) {
+  let correctAnswers = 0;
+  let incorrectAnswers = 0;
+  
+  quiz.questions.forEach((q, i) => {
+    if (submission.answers[i] === q.correctIndex) {
+      correctAnswers++;
+    } else if (submission.answers[i] !== undefined) {
+      incorrectAnswers++;
+    }
+  });
+  
+  return { correctAnswers, incorrectAnswers };
 }
 
 app.post("/api/quiz/submit/:code", async (req, res) => {
@@ -636,6 +654,252 @@ app.get("/api/quiz/summary/:code", async (req, res) => {
   } catch (error) {
     console.error("Summary error:", error);
     res.status(500).json({ msg: "Failed to fetch summary" });
+  }
+});
+
+app.get("/api/quiz/participants/:code", auth, async (req, res) => {
+  try {
+    const quiz = await Quiz.findOne({ code: req.params.code });
+    
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (quiz.creatorId.toString() !== req.user.id)
+      return res.status(403).json({ msg: "Access denied" });
+
+    const participants = await Submission.find({ quizCode: req.params.code })
+      .select("name rollNo branch score submittedAt answers")
+      .sort({ submittedAt: -1 });
+    
+    res.json(participants);
+  } catch (error) {
+    console.error("Participants error:", error);
+    res.status(500).json({ msg: "Failed to fetch participants" });
+  }
+});
+
+app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
+  try {
+    const { code, rollNo } = req.params;
+    
+    const quiz = await Quiz.findOne({ code });
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (quiz.creatorId.toString() !== req.user.id)
+      return res.status(403).json({ msg: "Access denied" });
+
+    const submission = await Submission.findOne({ quizCode: code, rollNo });
+    if (!submission) return res.status(404).json({ msg: "Submission not found" });
+
+    // Calculate stats using helper function
+    const { correctAnswers, incorrectAnswers } = calculateQuizStatistics(quiz, submission);
+
+    // Generate PDF (reuse existing PDF generation code from submit endpoint)
+    const fileName = `Result-${rollNo}-${code}.pdf`;
+    const filePath = path.join(__dirname, fileName);
+    const doc = new PDFDocument({ margin: 50 });
+
+    doc.pipe(fs.createWriteStream(filePath));
+
+    const percentage = ((submission.score / quiz.questions.length) * 100).toFixed(2);
+    const performanceRating = getPerformanceRating(percentage);
+    
+    // Page setup
+    const pageWidth = doc.page.width;
+    const margin = doc.page.margins.left;
+    const contentWidth = pageWidth - 2 * margin;
+
+    // ============ PROFESSIONAL HEADER ============
+    let yPosition = 50;
+
+    // Try to add logo if available
+    if (quiz.logoUrl) {
+      try {
+        const logoBuffer = await fetchImageAsBuffer(quiz.logoUrl);
+        if (logoBuffer) {
+          doc.image(logoBuffer, margin, yPosition, { width: 80, height: 80 });
+          
+          // Organization name and quiz title next to logo
+          doc.fontSize(20).font("Helvetica-Bold")
+            .text(quiz.orgName || "Quiz Report", margin + 100, yPosition, { width: contentWidth - 100 });
+          doc.fontSize(16).font("Helvetica")
+            .text(quiz.title, margin + 100, yPosition + 30, { width: contentWidth - 100 });
+          
+          yPosition += 100;
+        } else {
+          // Logo fetch failed, use text only
+          doc.fontSize(22).font("Helvetica-Bold").fillColor("#2c3e50")
+            .text(quiz.orgName || "Quiz Report", { align: "center" });
+          doc.fontSize(18).font("Helvetica").fillColor("#34495e")
+            .text(quiz.title, { align: "center" });
+          yPosition += 80;
+        }
+      } catch (err) {
+        console.error("Error adding logo to PDF:", err);
+        // Fallback to text only
+        doc.fontSize(22).font("Helvetica-Bold").fillColor("#2c3e50")
+          .text(quiz.orgName || "Quiz Report", { align: "center" });
+        doc.fontSize(18).font("Helvetica").fillColor("#34495e")
+          .text(quiz.title, { align: "center" });
+        yPosition += 80;
+      }
+    } else {
+      // No logo, use text only
+      doc.fontSize(22).font("Helvetica-Bold").fillColor("#2c3e50")
+        .text(quiz.orgName || "Quiz Report", { align: "center" });
+      doc.fontSize(18).font("Helvetica").fillColor("#34495e")
+        .text(quiz.title, { align: "center" });
+      yPosition += 80;
+    }
+
+    // Date and time
+    doc.fontSize(10).font("Helvetica").fillColor("#7f8c8d")
+      .text(`Generated on: ${new Date().toLocaleString()}`, { align: "center" });
+    
+    yPosition += 30;
+    doc.moveTo(margin, yPosition).lineTo(pageWidth - margin, yPosition).stroke("#bdc3c7");
+    yPosition += 30;
+
+    // ============ STUDENT INFORMATION CARD ============
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#2c3e50")
+      .text("Student Information", margin, yPosition);
+    yPosition += 20;
+
+    // Draw a box for student info
+    doc.rect(margin, yPosition, contentWidth, 100).fillAndStroke("#ecf0f1", "#bdc3c7");
+    yPosition += 15;
+
+    doc.fontSize(12).font("Helvetica").fillColor("#2c3e50")
+      .text(`Name: ${submission.name}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.text(`Roll No: ${submission.rollNo}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.text(`Branch: ${submission.branch}`, margin + 15, yPosition);
+    yPosition += 20;
+    
+    // Score with visual indicator
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#27ae60")
+      .text(`Score: ${submission.score}/${quiz.questions.length} (${percentage}%)`, margin + 15, yPosition);
+    
+    yPosition += 40;
+
+    // ============ DETAILED RESULTS SECTION ============
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#2c3e50")
+      .text("Detailed Results", margin, yPosition);
+    yPosition += 20;
+
+    quiz.questions.forEach((q, i) => {
+      // Check if we need a new page
+      if (yPosition > doc.page.height - 200) {
+        doc.addPage();
+        yPosition = 50;
+      }
+
+      const isCorrect = submission.answers[i] === q.correctIndex;
+      const isAnswered = submission.answers[i] !== undefined;
+      
+      // Question box - different color for correct, incorrect, and unanswered
+      const boxColor = isAnswered ? (isCorrect ? "#d5f4e6" : "#fadbd8") : "#f0f0f0";
+      doc.rect(margin, yPosition, contentWidth, 10).fillAndStroke(boxColor, "#bdc3c7");
+      yPosition += 15;
+
+      // Question number and text
+      doc.fontSize(11).font("Helvetica-Bold").fillColor("#2c3e50")
+        .text(`Q${i + 1}. ${q.text}`, margin + 10, yPosition, { width: contentWidth - 20 });
+      yPosition += doc.heightOfString(`Q${i + 1}. ${q.text}`, { width: contentWidth - 20 }) + 5;
+
+      // Your answer
+      const userAnswer = isAnswered && q.options[submission.answers[i]] 
+        ? q.options[submission.answers[i]] 
+        : "Not answered";
+      const answerColor = isAnswered ? (isCorrect ? "#27ae60" : "#e74c3c") : "#95a5a6";
+      doc.fontSize(10).font("Helvetica").fillColor(answerColor)
+        .text(`Your Answer: ${userAnswer}`, margin + 10, yPosition, { width: contentWidth - 20 });
+      yPosition += 15;
+
+      // Correct answer
+      doc.fontSize(10).font("Helvetica").fillColor("#2c3e50")
+        .text(`Correct Answer: ${q.options[q.correctIndex]}`, margin + 10, yPosition, { width: contentWidth - 20 });
+      yPosition += 15;
+
+      // Status indicator
+      let statusText, statusColor;
+      if (!isAnswered) {
+        statusText = "- Not Answered";
+        statusColor = "#95a5a6";
+      } else if (isCorrect) {
+        statusText = "✓ Correct";
+        statusColor = "#27ae60";
+      } else {
+        statusText = "✗ Incorrect";
+        statusColor = "#e74c3c";
+      }
+      doc.fontSize(10).font("Helvetica-Bold").fillColor(statusColor)
+        .text(statusText, margin + 10, yPosition);
+      yPosition += 25;
+    });
+
+    // ============ SUMMARY FOOTER ============
+    if (yPosition > doc.page.height - 250) {
+      doc.addPage();
+      yPosition = 50;
+    }
+
+    yPosition += 20;
+    doc.moveTo(margin, yPosition).lineTo(pageWidth - margin, yPosition).stroke("#bdc3c7");
+    yPosition += 20;
+
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#2c3e50")
+      .text("Summary", margin, yPosition);
+    yPosition += 20;
+
+    // Summary box
+    doc.rect(margin, yPosition, contentWidth, 120).fillAndStroke("#ecf0f1", "#bdc3c7");
+    yPosition += 15;
+
+    doc.fontSize(12).font("Helvetica").fillColor("#2c3e50")
+      .text(`Total Questions: ${quiz.questions.length}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fillColor("#27ae60")
+      .text(`Correct Answers: ${correctAnswers}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fillColor("#e74c3c")
+      .text(`Incorrect Answers: ${incorrectAnswers}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fillColor("#2c3e50")
+      .text(`Percentage: ${percentage}%`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fontSize(13).font("Helvetica-Bold").fillColor("#3498db")
+      .text(`Performance Rating: ${performanceRating}`, margin + 15, yPosition);
+
+    doc.end();
+
+    doc.on("finish", () => {
+      res.download(filePath, fileName, (err) => {
+        if (err) {
+          console.error("Error sending PDF:", err);
+          // Note: Can't send error response here as headers may already be sent
+        }
+        // Clean up the file after sending
+        try {
+          fs.unlinkSync(filePath);
+        } catch (unlinkErr) {
+          console.error("Error deleting PDF file:", unlinkErr);
+        }
+      });
+    });
+
+    doc.on("error", (err) => {
+      console.error("PDF generation error:", err);
+      // Try to send error response only if headers haven't been sent
+      if (!res.headersSent) {
+        res.status(500).json({ msg: "Failed to generate PDF" });
+      }
+    });
+
+  } catch (error) {
+    console.error("PDF download error:", error);
+    // Only send error response if headers haven't been sent
+    if (!res.headersSent) {
+      res.status(500).json({ msg: "Failed to download PDF", error: error.message });
+    }
   }
 });
 

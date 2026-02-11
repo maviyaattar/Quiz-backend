@@ -786,9 +786,11 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
       }
 
       const isCorrect = submission.answers[i] === q.correctIndex;
+      const isAnswered = submission.answers[i] !== undefined;
       
-      // Question box
-      doc.rect(margin, yPosition, contentWidth, 10).fillAndStroke(isCorrect ? "#d5f4e6" : "#fadbd8", "#bdc3c7");
+      // Question box - different color for correct, incorrect, and unanswered
+      const boxColor = isAnswered ? (isCorrect ? "#d5f4e6" : "#fadbd8") : "#f0f0f0";
+      doc.rect(margin, yPosition, contentWidth, 10).fillAndStroke(boxColor, "#bdc3c7");
       yPosition += 15;
 
       // Question number and text
@@ -797,10 +799,11 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
       yPosition += doc.heightOfString(`Q${i + 1}. ${q.text}`, { width: contentWidth - 20 }) + 5;
 
       // Your answer
-      const userAnswer = submission.answers[i] !== undefined && q.options[submission.answers[i]] 
+      const userAnswer = isAnswered && q.options[submission.answers[i]] 
         ? q.options[submission.answers[i]] 
         : "Not answered";
-      doc.fontSize(10).font("Helvetica").fillColor(isCorrect ? "#27ae60" : "#e74c3c")
+      const answerColor = isAnswered ? (isCorrect ? "#27ae60" : "#e74c3c") : "#95a5a6";
+      doc.fontSize(10).font("Helvetica").fillColor(answerColor)
         .text(`Your Answer: ${userAnswer}`, margin + 10, yPosition, { width: contentWidth - 20 });
       yPosition += 15;
 
@@ -810,8 +813,19 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
       yPosition += 15;
 
       // Status indicator
-      doc.fontSize(10).font("Helvetica-Bold").fillColor(isCorrect ? "#27ae60" : "#e74c3c")
-        .text(isCorrect ? "✓ Correct" : "✗ Incorrect", margin + 10, yPosition);
+      let statusText, statusColor;
+      if (!isAnswered) {
+        statusText = "- Not Answered";
+        statusColor = "#95a5a6";
+      } else if (isCorrect) {
+        statusText = "✓ Correct";
+        statusColor = "#27ae60";
+      } else {
+        statusText = "✗ Incorrect";
+        statusColor = "#e74c3c";
+      }
+      doc.fontSize(10).font("Helvetica-Bold").fillColor(statusColor)
+        .text(statusText, margin + 10, yPosition);
       yPosition += 25;
     });
 

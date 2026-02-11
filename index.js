@@ -379,6 +379,22 @@ function getPerformanceRating(percentage) {
   return "Needs Improvement";
 }
 
+// Helper function to calculate quiz statistics
+function calculateQuizStatistics(quiz, submission) {
+  let correctAnswers = 0;
+  let incorrectAnswers = 0;
+  
+  quiz.questions.forEach((q, i) => {
+    if (submission.answers[i] === q.correctIndex) {
+      correctAnswers++;
+    } else if (submission.answers[i] !== undefined) {
+      incorrectAnswers++;
+    }
+  });
+  
+  return { correctAnswers, incorrectAnswers };
+}
+
 app.post("/api/quiz/submit/:code", async (req, res) => {
   try {
     const { name, branch, rollNo, answers } = req.body;
@@ -672,17 +688,8 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
     const submission = await Submission.findOne({ quizCode: code, rollNo });
     if (!submission) return res.status(404).json({ msg: "Submission not found" });
 
-    // Calculate stats
-    let correctAnswers = 0;
-    let incorrectAnswers = 0;
-    
-    quiz.questions.forEach((q, i) => {
-      if (submission.answers[i] === q.correctIndex) {
-        correctAnswers++;
-      } else if (submission.answers[i] !== undefined) {
-        incorrectAnswers++;
-      }
-    });
+    // Calculate stats using helper function
+    const { correctAnswers, incorrectAnswers } = calculateQuizStatistics(quiz, submission);
 
     // Generate PDF (reuse existing PDF generation code from submit endpoint)
     const fileName = `Result-${rollNo}-${code}.pdf`;
@@ -866,7 +873,11 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
 
     doc.on("finish", () => {
       res.download(filePath, fileName, (err) => {
-        if (err) console.error("Error sending PDF:", err);
+        if (err) {
+          console.error("Error sending PDF:", err);
+          // Note: Can't send error response here as headers may already be sent
+        }
+        // Clean up the file after sending
         try {
           fs.unlinkSync(filePath);
         } catch (unlinkErr) {
@@ -877,12 +888,18 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
 
     doc.on("error", (err) => {
       console.error("PDF generation error:", err);
-      res.status(500).json({ msg: "Failed to generate PDF" });
+      // Try to send error response only if headers haven't been sent
+      if (!res.headersSent) {
+        res.status(500).json({ msg: "Failed to generate PDF" });
+      }
     });
 
   } catch (error) {
     console.error("PDF download error:", error);
-    res.status(500).json({ msg: "Failed to download PDF", error: error.message });
+    // Only send error response if headers haven't been sent
+    if (!res.headersSent) {
+      res.status(500).json({ msg: "Failed to download PDF", error: error.message });
+    }
   }
 });
 

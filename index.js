@@ -605,9 +605,19 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
 
     doc.end();
 
+    // Handle PDF generation errors
+    doc.on("error", (err) => {
+      console.error("PDF generation error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ msg: "Failed to generate PDF" });
+      }
+    });
+
   } catch (error) {
     console.error("Submit quiz error:", error);
-    res.status(500).json({ msg: "Failed to submit quiz", error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ msg: "Failed to submit quiz", error: error.message });
+    }
   }
 });
 
@@ -863,6 +873,14 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
       .text(`Performance Rating: ${performanceRating}`, margin + 15, yPosition);
 
     doc.end();
+
+    // Handle PDF generation errors
+    doc.on("error", (err) => {
+      console.error("PDF generation error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ msg: "Failed to generate PDF" });
+      }
+    });
 
   } catch (error) {
     console.error("PDF download error:", error);

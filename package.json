@@ -1,19 +1,34 @@
 {
   "name": "quiz-backend",
-  "version": "2.0.0",
-  "description": "Real-time quiz backend with auth, timer, scoring, leaderboard",
+  "version": "2.1.0",
+  "description": "Advanced quiz backend with auth, branding, negative marking, PDF reports, leaderboard",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "engines": {
     "node": ">=18"
   },
+  "keywords": [
+    "quiz",
+    "exam-system",
+    "nodejs",
+    "mongoose",
+    "pdf-generator",
+    "saas"
+  ],
+  "author": "Maviya Attar",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "mongoose": "^8.0.0",
-    "cors": "^2.8.5",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2"
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.0.0",
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
   }
 }

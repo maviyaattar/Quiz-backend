@@ -679,7 +679,7 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
     quiz.questions.forEach((q, i) => {
       if (submission.answers[i] === q.correctIndex) {
         correctAnswers++;
-      } else {
+      } else if (submission.answers[i] !== undefined) {
         incorrectAnswers++;
       }
     });
@@ -797,9 +797,11 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
       yPosition += doc.heightOfString(`Q${i + 1}. ${q.text}`, { width: contentWidth - 20 }) + 5;
 
       // Your answer
+      const userAnswer = submission.answers[i] !== undefined && q.options[submission.answers[i]] 
+        ? q.options[submission.answers[i]] 
+        : "Not answered";
       doc.fontSize(10).font("Helvetica").fillColor(isCorrect ? "#27ae60" : "#e74c3c")
-        .text(`Your Answer: ${submission.answers[i] !== undefined ? q.options[submission.answers[i]] || "Not answered" : "Not answered"}`, 
-              margin + 10, yPosition, { width: contentWidth - 20 });
+        .text(`Your Answer: ${userAnswer}`, margin + 10, yPosition, { width: contentWidth - 20 });
       yPosition += 15;
 
       // Correct answer

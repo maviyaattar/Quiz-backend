@@ -435,11 +435,17 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
     });
 
     // Enhanced PDF Generation
-    const fileName = `Result-${rollNo}-${quiz.code}.pdf`;
-    const filePath = path.join(__dirname, fileName);
     const doc = new PDFDocument({ margin: 50 });
 
-    doc.pipe(fs.createWriteStream(filePath));
+    // Set response headers for PDF download
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=Result-${rollNo}-${quiz.code}.pdf`
+    );
+
+    // Stream directly to response
+    doc.pipe(res);
 
     // Calculate percentage
     const percentage = ((score / quiz.questions.length) * 100).toFixed(2);
@@ -599,25 +605,6 @@ app.post("/api/quiz/submit/:code", async (req, res) => {
 
     doc.end();
 
-    doc.on("finish", () => {
-      res.download(filePath, fileName, (err) => {
-        if (err) {
-          console.error("Error sending PDF:", err);
-        }
-        // Clean up the file after sending
-        try {
-          fs.unlinkSync(filePath);
-        } catch (unlinkErr) {
-          console.error("Error deleting PDF file:", unlinkErr);
-        }
-      });
-    });
-
-    doc.on("error", (err) => {
-      console.error("PDF generation error:", err);
-      res.status(500).json({ msg: "Failed to generate PDF" });
-    });
-
   } catch (error) {
     console.error("Submit quiz error:", error);
     res.status(500).json({ msg: "Failed to submit quiz", error: error.message });
@@ -692,11 +679,17 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
     const { correctAnswers, incorrectAnswers } = calculateQuizStatistics(quiz, submission);
 
     // Generate PDF (reuse existing PDF generation code from submit endpoint)
-    const fileName = `Result-${rollNo}-${code}.pdf`;
-    const filePath = path.join(__dirname, fileName);
     const doc = new PDFDocument({ margin: 50 });
 
-    doc.pipe(fs.createWriteStream(filePath));
+    // Set response headers for PDF download
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=Result-${rollNo}-${code}.pdf`
+    );
+
+    // Stream directly to response
+    doc.pipe(res);
 
     const percentage = ((submission.score / quiz.questions.length) * 100).toFixed(2);
     const performanceRating = getPerformanceRating(percentage);
@@ -870,29 +863,6 @@ app.get("/api/quiz/participant-pdf/:code/:rollNo", auth, async (req, res) => {
       .text(`Performance Rating: ${performanceRating}`, margin + 15, yPosition);
 
     doc.end();
-
-    doc.on("finish", () => {
-      res.download(filePath, fileName, (err) => {
-        if (err) {
-          console.error("Error sending PDF:", err);
-          // Note: Can't send error response here as headers may already be sent
-        }
-        // Clean up the file after sending
-        try {
-          fs.unlinkSync(filePath);
-        } catch (unlinkErr) {
-          console.error("Error deleting PDF file:", unlinkErr);
-        }
-      });
-    });
-
-    doc.on("error", (err) => {
-      console.error("PDF generation error:", err);
-      // Try to send error response only if headers haven't been sent
-      if (!res.headersSent) {
-        res.status(500).json({ msg: "Failed to generate PDF" });
-      }
-    });
 
   } catch (error) {
     console.error("PDF download error:", error);

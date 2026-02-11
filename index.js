@@ -6,6 +6,9 @@ const jwt = require("jsonwebtoken");
 const PDFDocument = require("pdfkit");
 const fs = require("fs");
 const path = require("path");
+const cloudinary = require("cloudinary").v2;
+const multer = require("multer");
+const axios = require("axios");
 
 const app = express();
 
@@ -16,11 +19,35 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 
+// Cloudinary Configuration
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "dgt4rfzqb",
+  api_key: process.env.CLOUDINARY_API_KEY || "654113358245137",
+  api_secret: process.env.CLOUDINARY_API_SECRET || "PvU8z3ZRF8ciW_F-XD7TOcYSEnE"
+});
+
 /* ======================
 MIDDLEWARE
 ====================== */
 app.use(cors({ origin: "*" }));
 app.use(express.json());
+
+// Multer configuration for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept only image files
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are allowed"), false);
+    }
+  }
+});
 
 /* ======================
 DB CONNECT
@@ -104,28 +131,82 @@ AUTH ROUTES
 ====================== */
 
 app.post("/api/auth/register", async (req, res) => {
-  const { name, email, password } = req.body;
+  try {
+    const { name, email, password } = req.body;
 
-  if (await Creator.findOne({ email }))
-    return res.status(400).json({ msg: "Email already exists" });
+    if (!name || !email || !password) {
+      return res.status(400).json({ msg: "All fields are required" });
+    }
 
-  const hashed = await bcrypt.hash(password, 10);
-  await Creator.create({ name, email, password: hashed });
+    if (await Creator.findOne({ email }))
+      return res.status(400).json({ msg: "Email already exists" });
 
-  res.json({ msg: "Registered successfully" });
+    const hashed = await bcrypt.hash(password, 10);
+    await Creator.create({ name, email, password: hashed });
+
+    res.json({ msg: "Registered successfully" });
+  } catch (error) {
+    console.error("Registration error:", error);
+    res.status(500).json({ msg: "Server error during registration" });
+  }
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-  const creator = await Creator.findOne({ email });
-  if (!creator) return res.status(400).json({ msg: "Invalid credentials" });
+    if (!email || !password) {
+      return res.status(400).json({ msg: "Email and password are required" });
+    }
 
-  const ok = await bcrypt.compare(password, creator.password);
-  if (!ok) return res.status(400).json({ msg: "Invalid credentials" });
+    const creator = await Creator.findOne({ email });
+    if (!creator) return res.status(400).json({ msg: "Invalid credentials" });
 
-  const token = jwt.sign({ id: creator._id }, JWT_SECRET, { expiresIn: "1d" });
-  res.json({ token, name: creator.name });
+    const ok = await bcrypt.compare(password, creator.password);
+    if (!ok) return res.status(400).json({ msg: "Invalid credentials" });
+
+    const token = jwt.sign({ id: creator._id }, JWT_SECRET, { expiresIn: "1d" });
+    res.json({ token, name: creator.name });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ msg: "Server error during login" });
+  }
+});
+
+/* ======================
+LOGO UPLOAD
+====================== */
+
+app.post("/api/upload-logo", auth, upload.single("logo"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ msg: "No file uploaded" });
+    }
+
+    // Upload to Cloudinary using buffer
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: "quiz-logos",
+          resource_type: "image"
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      uploadStream.end(req.file.buffer);
+    });
+
+    res.json({
+      msg: "Logo uploaded successfully",
+      url: result.secure_url,
+      publicId: result.public_id
+    });
+  } catch (error) {
+    console.error("Logo upload error:", error);
+    res.status(500).json({ msg: "Failed to upload logo", error: error.message });
+  }
 });
 
 /* ======================
@@ -133,24 +214,29 @@ CREATE QUIZ
 ====================== */
 
 app.post("/api/quiz/create", auth, async (req, res) => {
-  const { title, description, duration, questions, orgName, logoUrl, negativeMarking } = req.body;
+  try {
+    const { title, description, duration, questions, orgName, logoUrl, negativeMarking } = req.body;
 
-  if (!title || !questions?.length)
-    return res.status(400).json({ msg: "Invalid data" });
+    if (!title || !questions?.length)
+      return res.status(400).json({ msg: "Invalid data" });
 
-  const quiz = await Quiz.create({
-    code: generateCode(),
-    title,
-    description,
-    duration,
-    creatorId: req.user.id,
-    questions,
-    orgName,
-    logoUrl,
-    negativeMarking
-  });
+    const quiz = await Quiz.create({
+      code: generateCode(),
+      title,
+      description,
+      duration,
+      creatorId: req.user.id,
+      questions,
+      orgName,
+      logoUrl,
+      negativeMarking
+    });
 
-  res.json(quiz);
+    res.json(quiz);
+  } catch (error) {
+    console.error("Quiz creation error:", error);
+    res.status(500).json({ msg: "Failed to create quiz", error: error.message });
+  }
 });
 
 /* ======================
@@ -158,47 +244,67 @@ ALL YOUR OLD ROUTES KEPT SAME
 ====================== */
 
 app.get("/api/quiz/my", auth, async (req, res) => {
-  const quizzes = await Quiz.find({ creatorId: req.user.id })
-    .select("code title description status createdAt");
-  res.json(quizzes);
+  try {
+    const quizzes = await Quiz.find({ creatorId: req.user.id })
+      .select("code title description status createdAt");
+    res.json(quizzes);
+  } catch (error) {
+    console.error("Fetch quizzes error:", error);
+    res.status(500).json({ msg: "Failed to fetch quizzes" });
+  }
 });
 
 app.get("/api/quiz/:code", auth, async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
+  try {
+    const quiz = await Quiz.findOne({ code: req.params.code });
 
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (quiz.creatorId.toString() !== req.user.id)
-    return res.status(403).json({ msg: "Access denied" });
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (quiz.creatorId.toString() !== req.user.id)
+      return res.status(403).json({ msg: "Access denied" });
 
-  res.json(quiz);
+    res.json(quiz);
+  } catch (error) {
+    console.error("Fetch quiz error:", error);
+    res.status(500).json({ msg: "Failed to fetch quiz" });
+  }
 });
 
 app.post("/api/quiz/start/:code", auth, async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
+  try {
+    const quiz = await Quiz.findOne({ code: req.params.code });
 
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (quiz.creatorId.toString() !== req.user.id)
-    return res.status(403).json({ msg: "Not your quiz" });
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (quiz.creatorId.toString() !== req.user.id)
+      return res.status(403).json({ msg: "Not your quiz" });
 
-  quiz.status = "live";
-  quiz.startTime = new Date();
-  quiz.endTime = new Date(Date.now() + quiz.duration * 1000);
+    quiz.status = "live";
+    quiz.startTime = new Date();
+    quiz.endTime = new Date(Date.now() + quiz.duration * 1000);
 
-  await quiz.save();
-  res.json({ msg: "Quiz started", endTime: quiz.endTime });
+    await quiz.save();
+    res.json({ msg: "Quiz started", endTime: quiz.endTime });
+  } catch (error) {
+    console.error("Start quiz error:", error);
+    res.status(500).json({ msg: "Failed to start quiz" });
+  }
 });
 
 app.delete("/api/quiz/delete/:code", auth, async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
+  try {
+    const quiz = await Quiz.findOne({ code: req.params.code });
 
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (quiz.creatorId.toString() !== req.user.id)
-    return res.status(403).json({ msg: "Not your quiz" });
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (quiz.creatorId.toString() !== req.user.id)
+      return res.status(403).json({ msg: "Not your quiz" });
 
-  await Quiz.deleteOne({ code: quiz.code });
-  await Submission.deleteMany({ quizCode: quiz.code });
+    await Quiz.deleteOne({ code: quiz.code });
+    await Submission.deleteMany({ quizCode: quiz.code });
 
-  res.json({ msg: "Quiz deleted" });
+    res.json({ msg: "Quiz deleted" });
+  } catch (error) {
+    console.error("Delete quiz error:", error);
+    res.status(500).json({ msg: "Failed to delete quiz" });
+  }
 });
 
 /* ======================
@@ -206,101 +312,298 @@ PARTICIPANT
 ====================== */
 
 app.post("/api/quiz/join/:code", async (req, res) => {
-  const { rollNo } = req.body;
-  const quiz = await Quiz.findOne({ code: req.params.code });
+  try {
+    const { rollNo } = req.body;
+    const quiz = await Quiz.findOne({ code: req.params.code });
 
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
 
-  if (quiz.status !== "live")
-    return res.json({ status: quiz.status });
+    if (quiz.status !== "live")
+      return res.json({ status: quiz.status });
 
-  if (Date.now() > quiz.endTime)
-    return res.status(400).json({ msg: "Quiz ended" });
+    if (Date.now() > quiz.endTime)
+      return res.status(400).json({ msg: "Quiz ended" });
 
-  if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
-    return res.status(400).json({ msg: "Already attempted" });
+    if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
+      return res.status(400).json({ msg: "Already attempted" });
 
-  res.json({ status: "allowed", endTime: quiz.endTime });
+    res.json({ status: "allowed", endTime: quiz.endTime });
+  } catch (error) {
+    console.error("Join quiz error:", error);
+    res.status(500).json({ msg: "Failed to join quiz" });
+  }
 });
 
 app.get("/api/quiz/questions/:code", async (req, res) => {
-  const quiz = await Quiz.findOne({ code: req.params.code });
+  try {
+    const quiz = await Quiz.findOne({ code: req.params.code });
 
-  if (!quiz || quiz.status !== "live")
-    return res.status(400).json({ msg: "Quiz not live" });
+    if (!quiz || quiz.status !== "live")
+      return res.status(400).json({ msg: "Quiz not live" });
 
-  res.json({
-    endTime: quiz.endTime,
-    questions: quiz.questions.map(q => ({
-      text: q.text,
-      options: q.options
-    }))
-  });
+    res.json({
+      endTime: quiz.endTime,
+      questions: quiz.questions.map(q => ({
+        text: q.text,
+        options: q.options
+      }))
+    });
+  } catch (error) {
+    console.error("Fetch questions error:", error);
+    res.status(500).json({ msg: "Failed to fetch questions" });
+  }
 });
 
 /* ======================
 SUBMIT + PDF
 ====================== */
 
+// Helper function to fetch image from URL and return as buffer
+async function fetchImageAsBuffer(url) {
+  try {
+    const response = await axios.get(url, { responseType: "arraybuffer" });
+    return Buffer.from(response.data);
+  } catch (error) {
+    console.error("Failed to fetch image:", error.message);
+    return null;
+  }
+}
+
+// Helper function to get performance rating
+function getPerformanceRating(percentage) {
+  if (percentage >= 90) return "Excellent";
+  if (percentage >= 70) return "Good";
+  if (percentage >= 50) return "Average";
+  return "Needs Improvement";
+}
+
 app.post("/api/quiz/submit/:code", async (req, res) => {
-  const { name, branch, rollNo, answers } = req.body;
-  const quiz = await Quiz.findOne({ code: req.params.code });
+  try {
+    const { name, branch, rollNo, answers } = req.body;
+    const quiz = await Quiz.findOne({ code: req.params.code });
 
-  if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
-  if (Date.now() > quiz.endTime)
-    return res.status(400).json({ msg: "Time over" });
+    if (!quiz) return res.status(404).json({ msg: "Quiz not found" });
+    if (Date.now() > quiz.endTime)
+      return res.status(400).json({ msg: "Time over" });
 
-  if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
-    return res.status(400).json({ msg: "Already submitted" });
+    if (await Submission.findOne({ quizCode: quiz.code, rollNo }))
+      return res.status(400).json({ msg: "Already submitted" });
 
-  let score = 0;
+    // Calculate score
+    let score = 0;
+    let correctAnswers = 0;
+    let incorrectAnswers = 0;
 
-  quiz.questions.forEach((q, i) => {
-    if (answers[i] === q.correctIndex) score++;
-    else if (quiz.negativeMarking) score -= 0.25;
-  });
-
-  await Submission.create({
-    quizCode: quiz.code,
-    name,
-    branch,
-    rollNo,
-    answers,
-    score,
-    submittedAt: new Date()
-  });
-
-  const fileName = `Result-${rollNo}-${quiz.code}.pdf`;
-  const filePath = path.join(__dirname, fileName);
-  const doc = new PDFDocument();
-
-  doc.pipe(fs.createWriteStream(filePath));
-
-  doc.fontSize(18).text("Quiz Result Report", { align: "center" });
-  doc.moveDown();
-
-  if (quiz.orgName) doc.text(`Organization: ${quiz.orgName}`);
-  doc.text(`Name: ${name}`);
-  doc.text(`Roll No: ${rollNo}`);
-  doc.text(`Score: ${score}/${quiz.questions.length}`);
-  doc.moveDown();
-
-  quiz.questions.forEach((q, i) => {
-    const correct = answers[i] === q.correctIndex;
-    doc.text(`Q${i + 1}: ${q.text}`);
-    doc.text(`Your Answer: ${q.options[answers[i]]}`);
-    doc.text(`Correct Answer: ${q.options[q.correctIndex]}`);
-    doc.text(correct ? "✔ Correct" : "❌ Incorrect");
-    doc.moveDown();
-  });
-
-  doc.end();
-
-  doc.on("finish", () => {
-    res.download(filePath, fileName, () => {
-      fs.unlinkSync(filePath);
+    quiz.questions.forEach((q, i) => {
+      if (answers[i] === q.correctIndex) {
+        score++;
+        correctAnswers++;
+      } else if (quiz.negativeMarking) {
+        score -= 0.25;
+        incorrectAnswers++;
+      } else {
+        incorrectAnswers++;
+      }
     });
-  });
+
+    await Submission.create({
+      quizCode: quiz.code,
+      name,
+      branch,
+      rollNo,
+      answers,
+      score,
+      submittedAt: new Date()
+    });
+
+    // Enhanced PDF Generation
+    const fileName = `Result-${rollNo}-${quiz.code}.pdf`;
+    const filePath = path.join(__dirname, fileName);
+    const doc = new PDFDocument({ margin: 50 });
+
+    doc.pipe(fs.createWriteStream(filePath));
+
+    // Calculate percentage
+    const percentage = ((score / quiz.questions.length) * 100).toFixed(2);
+    const performanceRating = getPerformanceRating(percentage);
+
+    // Page setup
+    const pageWidth = doc.page.width;
+    const margin = doc.page.margins.left;
+    const contentWidth = pageWidth - 2 * margin;
+
+    // ============ PROFESSIONAL HEADER ============
+    let yPosition = 50;
+
+    // Try to add logo if available
+    if (quiz.logoUrl) {
+      try {
+        const logoBuffer = await fetchImageAsBuffer(quiz.logoUrl);
+        if (logoBuffer) {
+          doc.image(logoBuffer, margin, yPosition, { width: 80, height: 80 });
+          
+          // Organization name and quiz title next to logo
+          doc.fontSize(20).font("Helvetica-Bold")
+            .text(quiz.orgName || "Quiz Report", margin + 100, yPosition, { width: contentWidth - 100 });
+          doc.fontSize(16).font("Helvetica")
+            .text(quiz.title, margin + 100, yPosition + 30, { width: contentWidth - 100 });
+          
+          yPosition += 100;
+        } else {
+          // Logo fetch failed, use text only
+          doc.fontSize(22).font("Helvetica-Bold").fillColor("#2c3e50")
+            .text(quiz.orgName || "Quiz Report", { align: "center" });
+          doc.fontSize(18).font("Helvetica").fillColor("#34495e")
+            .text(quiz.title, { align: "center" });
+          yPosition += 80;
+        }
+      } catch (err) {
+        console.error("Error adding logo to PDF:", err);
+        // Fallback to text only
+        doc.fontSize(22).font("Helvetica-Bold").fillColor("#2c3e50")
+          .text(quiz.orgName || "Quiz Report", { align: "center" });
+        doc.fontSize(18).font("Helvetica").fillColor("#34495e")
+          .text(quiz.title, { align: "center" });
+        yPosition += 80;
+      }
+    } else {
+      // No logo, use text only
+      doc.fontSize(22).font("Helvetica-Bold").fillColor("#2c3e50")
+        .text(quiz.orgName || "Quiz Report", { align: "center" });
+      doc.fontSize(18).font("Helvetica").fillColor("#34495e")
+        .text(quiz.title, { align: "center" });
+      yPosition += 80;
+    }
+
+    // Date and time
+    doc.fontSize(10).font("Helvetica").fillColor("#7f8c8d")
+      .text(`Generated on: ${new Date().toLocaleString()}`, { align: "center" });
+    
+    yPosition += 30;
+    doc.moveTo(margin, yPosition).lineTo(pageWidth - margin, yPosition).stroke("#bdc3c7");
+    yPosition += 30;
+
+    // ============ STUDENT INFORMATION CARD ============
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#2c3e50")
+      .text("Student Information", margin, yPosition);
+    yPosition += 20;
+
+    // Draw a box for student info
+    doc.rect(margin, yPosition, contentWidth, 100).fillAndStroke("#ecf0f1", "#bdc3c7");
+    yPosition += 15;
+
+    doc.fontSize(12).font("Helvetica").fillColor("#2c3e50")
+      .text(`Name: ${name}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.text(`Roll No: ${rollNo}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.text(`Branch: ${branch}`, margin + 15, yPosition);
+    yPosition += 20;
+    
+    // Score with visual indicator
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#27ae60")
+      .text(`Score: ${score}/${quiz.questions.length} (${percentage}%)`, margin + 15, yPosition);
+    
+    yPosition += 40;
+
+    // ============ DETAILED RESULTS SECTION ============
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#2c3e50")
+      .text("Detailed Results", margin, yPosition);
+    yPosition += 20;
+
+    quiz.questions.forEach((q, i) => {
+      // Check if we need a new page
+      if (yPosition > doc.page.height - 200) {
+        doc.addPage();
+        yPosition = 50;
+      }
+
+      const isCorrect = answers[i] === q.correctIndex;
+      
+      // Question box
+      doc.rect(margin, yPosition, contentWidth, 10).fillAndStroke(isCorrect ? "#d5f4e6" : "#fadbd8", "#bdc3c7");
+      yPosition += 15;
+
+      // Question number and text
+      doc.fontSize(11).font("Helvetica-Bold").fillColor("#2c3e50")
+        .text(`Q${i + 1}. ${q.text}`, margin + 10, yPosition, { width: contentWidth - 20 });
+      yPosition += doc.heightOfString(`Q${i + 1}. ${q.text}`, { width: contentWidth - 20 }) + 5;
+
+      // Your answer
+      doc.fontSize(10).font("Helvetica").fillColor(isCorrect ? "#27ae60" : "#e74c3c")
+        .text(`Your Answer: ${answers[i] !== undefined ? q.options[answers[i]] || "Not answered" : "Not answered"}`, 
+              margin + 10, yPosition, { width: contentWidth - 20 });
+      yPosition += 15;
+
+      // Correct answer
+      doc.fontSize(10).font("Helvetica").fillColor("#2c3e50")
+        .text(`Correct Answer: ${q.options[q.correctIndex]}`, margin + 10, yPosition, { width: contentWidth - 20 });
+      yPosition += 15;
+
+      // Status indicator
+      doc.fontSize(10).font("Helvetica-Bold").fillColor(isCorrect ? "#27ae60" : "#e74c3c")
+        .text(isCorrect ? "✓ Correct" : "✗ Incorrect", margin + 10, yPosition);
+      yPosition += 25;
+    });
+
+    // ============ SUMMARY FOOTER ============
+    if (yPosition > doc.page.height - 250) {
+      doc.addPage();
+      yPosition = 50;
+    }
+
+    yPosition += 20;
+    doc.moveTo(margin, yPosition).lineTo(pageWidth - margin, yPosition).stroke("#bdc3c7");
+    yPosition += 20;
+
+    doc.fontSize(14).font("Helvetica-Bold").fillColor("#2c3e50")
+      .text("Summary", margin, yPosition);
+    yPosition += 20;
+
+    // Summary box
+    doc.rect(margin, yPosition, contentWidth, 120).fillAndStroke("#ecf0f1", "#bdc3c7");
+    yPosition += 15;
+
+    doc.fontSize(12).font("Helvetica").fillColor("#2c3e50")
+      .text(`Total Questions: ${quiz.questions.length}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fillColor("#27ae60")
+      .text(`Correct Answers: ${correctAnswers}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fillColor("#e74c3c")
+      .text(`Incorrect Answers: ${incorrectAnswers}`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fillColor("#2c3e50")
+      .text(`Percentage: ${percentage}%`, margin + 15, yPosition);
+    yPosition += 20;
+    doc.fontSize(13).font("Helvetica-Bold").fillColor("#3498db")
+      .text(`Performance Rating: ${performanceRating}`, margin + 15, yPosition);
+
+    doc.end();
+
+    doc.on("finish", () => {
+      res.download(filePath, fileName, (err) => {
+        if (err) {
+          console.error("Error sending PDF:", err);
+        }
+        // Clean up the file after sending
+        try {
+          fs.unlinkSync(filePath);
+        } catch (unlinkErr) {
+          console.error("Error deleting PDF file:", unlinkErr);
+        }
+      });
+    });
+
+    doc.on("error", (err) => {
+      console.error("PDF generation error:", err);
+      res.status(500).json({ msg: "Failed to generate PDF" });
+    });
+
+  } catch (error) {
+    console.error("Submit quiz error:", error);
+    res.status(500).json({ msg: "Failed to submit quiz", error: error.message });
+  }
 });
 
 /* ======================
@@ -308,27 +611,42 @@ LEADERBOARD & SUMMARY
 ====================== */
 
 app.get("/api/quiz/leaderboard/:code", async (req, res) => {
-  const data = await Submission.find({ quizCode: req.params.code })
-    .sort({ score: -1, submittedAt: 1 })
-    .select("name rollNo score");
-  res.json(data);
+  try {
+    const data = await Submission.find({ quizCode: req.params.code })
+      .sort({ score: -1, submittedAt: 1 })
+      .select("name rollNo score");
+    res.json(data);
+  } catch (error) {
+    console.error("Leaderboard error:", error);
+    res.status(500).json({ msg: "Failed to fetch leaderboard" });
+  }
 });
 
 app.get("/api/quiz/summary/:code", async (req, res) => {
-  const subs = await Submission.find({ quizCode: req.params.code });
+  try {
+    const subs = await Submission.find({ quizCode: req.params.code });
 
-  const total = subs.length;
-  const highest = total ? Math.max(...subs.map(s => s.score)) : 0;
-  const average = total
-    ? subs.reduce((a, b) => a + b.score, 0) / total
-    : 0;
+    const total = subs.length;
+    const highest = total ? Math.max(...subs.map(s => s.score)) : 0;
+    const average = total
+      ? subs.reduce((a, b) => a + b.score, 0) / total
+      : 0;
 
-  res.json({ total, highest, average });
+    res.json({ total, highest, average });
+  } catch (error) {
+    console.error("Summary error:", error);
+    res.status(500).json({ msg: "Failed to fetch summary" });
+  }
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
-  const creator = await Creator.findById(req.user.id).select("name email");
-  res.json(creator);
+  try {
+    const creator = await Creator.findById(req.user.id).select("name email");
+    res.json(creator);
+  } catch (error) {
+    console.error("Get user error:", error);
+    res.status(500).json({ msg: "Failed to fetch user data" });
+  }
 });
 
 /* ======================

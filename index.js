@@ -248,12 +248,16 @@ app.post("/api/quiz/generate-ai", auth, async (req, res) => {
     const { topic, difficulty = "medium", numQuestions = 10 } = req.body;
     
     // Validation
-    if (!topic || !topic.trim()) {
-      return res.status(400).json({ msg: "Topic is required" });
+    if (!topic || typeof topic !== "string" || !topic.trim()) {
+      return res.status(400).json({ msg: "Topic is required and must be a string" });
     }
     
-    if (numQuestions < 1 || numQuestions > 50) {
-      return res.status(400).json({ msg: "Number of questions must be between 1 and 50" });
+    if (typeof numQuestions !== "number" || numQuestions < 1 || numQuestions > 50) {
+      return res.status(400).json({ msg: "Number of questions must be a number between 1 and 50" });
+    }
+    
+    if (typeof difficulty !== "string") {
+      return res.status(400).json({ msg: "Difficulty must be a string" });
     }
     
     const validDifficulties = ["easy", "medium", "hard"];

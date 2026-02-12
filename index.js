@@ -19,6 +19,11 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 
+// AI Generation Configuration
+const AI_MODEL = "mixtral-8x7b-32768";
+const AI_TEMPERATURE = 0.7;
+const AI_MAX_TOKENS = 4096;
+
 // Cloudinary Configuration
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "dgt4rfzqb",
@@ -261,8 +266,23 @@ app.post("/api/quiz/generate-ai", auth, async (req, res) => {
       return res.status(400).json({ msg: "Topic is required and must be a non-empty string" });
     }
     
-    // Sanitize topic - limit length and trim
-    const sanitizedTopic = topic.trim().substring(0, 200);
+    // Sanitize topic - limit length, trim, and check for prompt injection patterns
+    let sanitizedTopic = topic.trim().substring(0, 200);
+    
+    // Basic prompt injection prevention - reject topics with suspicious patterns
+    const suspiciousPatterns = [
+      /ignore\s+(previous|all|above)\s+instructions?/i,
+      /disregard\s+(previous|all|above)/i,
+      /forget\s+(previous|all|above)/i,
+      /new\s+instructions?:/i,
+      /system\s*:/i,
+      /assistant\s*:/i
+    ];
+    
+    const hasSuspiciousPattern = suspiciousPatterns.some(pattern => pattern.test(sanitizedTopic));
+    if (hasSuspiciousPattern) {
+      return res.status(400).json({ msg: "Topic contains invalid content" });
+    }
     
     // Validation - numQuestions
     if (typeof numQuestions !== "number" || !Number.isInteger(numQuestions) || numQuestions < 1 || numQuestions > 50) {
@@ -308,15 +328,15 @@ Requirements:
     const groqResponse = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
-        model: "mixtral-8x7b-32768",
+        model: AI_MODEL,
         messages: [
           {
             role: "user",
             content: prompt
           }
         ],
-        temperature: 0.7,
-        max_tokens: 4096
+        temperature: AI_TEMPERATURE,
+        max_tokens: AI_MAX_TOKENS
       },
       {
         headers: {

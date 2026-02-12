@@ -20,7 +20,7 @@ const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 // AI Generation Configuration
-const AI_MODEL = "mixtral-8x7b-32768";
+const AI_MODEL = "llama-3.1-8b-instant";
 const AI_TEMPERATURE = 0.7;
 const AI_MAX_TOKENS = 4096;
 

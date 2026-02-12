@@ -240,6 +240,171 @@ app.post("/api/quiz/create", auth, async (req, res) => {
 });
 
 /* ======================
+AI QUIZ GENERATION
+====================== */
+
+app.post("/api/quiz/generate-ai", auth, async (req, res) => {
+  try {
+    const { topic, difficulty = "medium", numQuestions = 10 } = req.body;
+    
+    // Validation
+    if (!topic || !topic.trim()) {
+      return res.status(400).json({ msg: "Topic is required" });
+    }
+    
+    if (numQuestions < 1 || numQuestions > 50) {
+      return res.status(400).json({ msg: "Number of questions must be between 1 and 50" });
+    }
+    
+    const validDifficulties = ["easy", "medium", "hard"];
+    const normalizedDifficulty = difficulty.toLowerCase();
+    if (!validDifficulties.includes(normalizedDifficulty)) {
+      return res.status(400).json({ msg: "Difficulty must be easy, medium, or hard" });
+    }
+    
+    // Check if GROQ_API_KEY is configured
+    const groqApiKey = process.env.GROQ_API_KEY;
+    if (!groqApiKey) {
+      return res.status(500).json({ msg: "AI service not configured" });
+    }
+    
+    // Construct prompt for Groq
+    const prompt = `Generate ${numQuestions} ${normalizedDifficulty} difficulty multiple-choice questions about: ${topic}. 
+
+Return ONLY a JSON array in this exact format:
+[
+  {
+    "text": "Question text here?",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correctIndex": 0
+  }
+]
+
+Requirements:
+- Exactly 4 options per question
+- correctIndex is 0-3 (index of correct answer)
+- Questions should be clear and unambiguous
+- Return ONLY the JSON array, no other text`;
+
+    // Make API call to Groq
+    const groqResponse = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "mixtral-8x7b-32768",
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 4096
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${groqApiKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    
+    // Extract content from Groq response
+    const content = groqResponse.data?.choices?.[0]?.message?.content;
+    if (!content) {
+      return res.status(500).json({ msg: "Failed to generate questions - empty response" });
+    }
+    
+    // Parse JSON from content (handle potential markdown code blocks)
+    let questionsArray;
+    try {
+      // Try to extract JSON from markdown code blocks if present
+      let jsonString = content.trim();
+      
+      // Remove markdown code block markers if present
+      if (jsonString.startsWith("```json")) {
+        jsonString = jsonString.replace(/^```json\s*/i, "").replace(/```\s*$/, "");
+      } else if (jsonString.startsWith("```")) {
+        jsonString = jsonString.replace(/^```\s*/, "").replace(/```\s*$/, "");
+      }
+      
+      questionsArray = JSON.parse(jsonString);
+    } catch (parseError) {
+      console.error("Failed to parse Groq response:", content);
+      return res.status(500).json({ 
+        msg: "Failed to parse AI response",
+        error: parseError.message 
+      });
+    }
+    
+    // Validate that we got an array
+    if (!Array.isArray(questionsArray)) {
+      return res.status(500).json({ msg: "AI response is not a valid array" });
+    }
+    
+    // Validate each question
+    const validatedQuestions = [];
+    for (let i = 0; i < questionsArray.length; i++) {
+      const q = questionsArray[i];
+      
+      // Check required fields
+      if (!q.text || typeof q.text !== "string") {
+        console.error(`Question ${i + 1} missing or invalid text field`);
+        continue;
+      }
+      
+      if (!Array.isArray(q.options) || q.options.length !== 4) {
+        console.error(`Question ${i + 1} must have exactly 4 options`);
+        continue;
+      }
+      
+      if (typeof q.correctIndex !== "number" || q.correctIndex < 0 || q.correctIndex > 3) {
+        console.error(`Question ${i + 1} has invalid correctIndex`);
+        continue;
+      }
+      
+      validatedQuestions.push({
+        text: q.text,
+        options: q.options,
+        correctIndex: q.correctIndex
+      });
+    }
+    
+    if (validatedQuestions.length === 0) {
+      return res.status(500).json({ msg: "No valid questions generated" });
+    }
+    
+    // Return successful response
+    res.json({
+      success: true,
+      questions: validatedQuestions
+    });
+    
+  } catch (error) {
+    console.error("AI generation error:", error);
+    
+    // Handle specific error types
+    if (error.response) {
+      // Groq API error
+      const status = error.response.status;
+      const message = error.response.data?.error?.message || "AI service error";
+      
+      if (status === 401) {
+        return res.status(500).json({ msg: "AI service authentication failed" });
+      } else if (status === 429) {
+        return res.status(429).json({ msg: "AI service rate limit exceeded, please try again later" });
+      } else {
+        return res.status(500).json({ msg: message });
+      }
+    }
+    
+    res.status(500).json({ 
+      msg: "Failed to generate questions", 
+      error: error.message 
+    });
+  }
+});
+
+/* ======================
 ALL YOUR OLD ROUTES KEPT SAME
 ====================== */
 

@@ -250,16 +250,8 @@ AI QUIZ GENERATION
 
 app.post("/api/quiz/generate-ai", auth, async (req, res) => {
   try {
-    // Extract and set defaults properly
-    let { topic, difficulty, numQuestions } = req.body;
-    
-    // Apply defaults for undefined values
-    if (difficulty === undefined) {
-      difficulty = "medium";
-    }
-    if (numQuestions === undefined) {
-      numQuestions = 10;
-    }
+    // Extract with defaults using nullish coalescing
+    const { topic, difficulty = "medium", numQuestions = 10 } = req.body;
     
     // Validation - topic
     if (!topic || typeof topic !== "string" || !topic.trim()) {
@@ -267,7 +259,7 @@ app.post("/api/quiz/generate-ai", auth, async (req, res) => {
     }
     
     // Sanitize topic - limit length, trim, and check for prompt injection patterns
-    let sanitizedTopic = topic.trim().substring(0, 200);
+    const sanitizedTopic = topic.trim().substring(0, 200);
     
     // Basic prompt injection prevention - reject topics with suspicious patterns
     const suspiciousPatterns = [
@@ -367,7 +359,7 @@ Requirements:
       
       questionsArray = JSON.parse(jsonString);
     } catch (parseError) {
-      console.error("Failed to parse Groq response:", content);
+      console.error("Failed to parse Groq response - invalid JSON format");
       return res.status(500).json({ 
         msg: "Failed to parse AI response",
         error: parseError.message 

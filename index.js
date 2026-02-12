@@ -245,17 +245,31 @@ AI QUIZ GENERATION
 
 app.post("/api/quiz/generate-ai", auth, async (req, res) => {
   try {
-    const { topic, difficulty = "medium", numQuestions = 10 } = req.body;
+    // Extract and set defaults properly
+    let { topic, difficulty, numQuestions } = req.body;
     
-    // Validation
+    // Apply defaults for undefined values
+    if (difficulty === undefined) {
+      difficulty = "medium";
+    }
+    if (numQuestions === undefined) {
+      numQuestions = 10;
+    }
+    
+    // Validation - topic
     if (!topic || typeof topic !== "string" || !topic.trim()) {
-      return res.status(400).json({ msg: "Topic is required and must be a string" });
+      return res.status(400).json({ msg: "Topic is required and must be a non-empty string" });
     }
     
-    if (typeof numQuestions !== "number" || numQuestions < 1 || numQuestions > 50) {
-      return res.status(400).json({ msg: "Number of questions must be a number between 1 and 50" });
+    // Sanitize topic - limit length and trim
+    const sanitizedTopic = topic.trim().substring(0, 200);
+    
+    // Validation - numQuestions
+    if (typeof numQuestions !== "number" || !Number.isInteger(numQuestions) || numQuestions < 1 || numQuestions > 50) {
+      return res.status(400).json({ msg: "Number of questions must be an integer between 1 and 50" });
     }
     
+    // Validation - difficulty
     if (typeof difficulty !== "string") {
       return res.status(400).json({ msg: "Difficulty must be a string" });
     }
@@ -272,8 +286,8 @@ app.post("/api/quiz/generate-ai", auth, async (req, res) => {
       return res.status(500).json({ msg: "AI service not configured" });
     }
     
-    // Construct prompt for Groq
-    const prompt = `Generate ${numQuestions} ${normalizedDifficulty} difficulty multiple-choice questions about: ${topic}. 
+    // Construct prompt for Groq using sanitized topic
+    const prompt = `Generate ${numQuestions} ${normalizedDifficulty} difficulty multiple-choice questions about: ${sanitizedTopic}. 
 
 Return ONLY a JSON array in this exact format:
 [
@@ -358,6 +372,13 @@ Requirements:
       
       if (!Array.isArray(q.options) || q.options.length !== 4) {
         console.error(`Question ${i + 1} must have exactly 4 options`);
+        continue;
+      }
+      
+      // Validate each option is a non-empty string
+      const validOptions = q.options.every(opt => typeof opt === "string" && opt.trim().length > 0);
+      if (!validOptions) {
+        console.error(`Question ${i + 1} has invalid options - all options must be non-empty strings`);
         continue;
       }
       
